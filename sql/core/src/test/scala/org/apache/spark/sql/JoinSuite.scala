@@ -522,10 +522,10 @@ class JoinSuite extends QueryTest with SharedSparkSession {
       SQLConf.CROSS_JOINS_ENABLED.key -> "true") {
 
       assert(statisticSizeInByte(spark.table("testData2")) >
-        spark.conf.get(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD))
+        spark.conf.get[Long](SQLConf.AUTO_BROADCASTJOIN_THRESHOLD))
 
       assert(statisticSizeInByte(spark.table("testData")) <
-        spark.conf.get(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD))
+        spark.conf.get[Long](SQLConf.AUTO_BROADCASTJOIN_THRESHOLD))
 
       Seq(
         ("SELECT * FROM testData LEFT SEMI JOIN testData2 ON key = a",
@@ -1068,6 +1068,15 @@ class JoinSuite extends QueryTest with SharedSparkSession {
       val df2 = spark.range(10).select($"id".as("b1"), (- $"id").as("b2"))
       val res = df1.join(df2, $"id" === $"b1" && $"id" === $"b2").select($"b1", $"b2", $"id")
       checkAnswer(res, Row(0, 0, 0))
+    }
+  }
+
+  test("SPARK-29850: sort-merge-join an empty table should not memory leak") {
+    val df1 = spark.range(10).select($"id", $"id" % 3 as 'p)
+      .repartition($"id").groupBy($"id").agg(Map("p" -> "max"))
+    val df2 = spark.range(0)
+    withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      assert(df2.join(df1, "id").collect().isEmpty)
     }
   }
 }
