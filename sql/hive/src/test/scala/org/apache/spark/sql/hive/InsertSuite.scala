@@ -19,6 +19,7 @@ package org.apache.spark.sql.hive
 
 import java.io.File
 
+import com.google.common.io.Files
 import org.apache.hadoop.fs.Path
 import org.scalatest.{BeforeAndAfter, PrivateMethodTester}
 
@@ -821,6 +822,51 @@ class InsertSuite extends QueryTest with TestHiveSingleton with BeforeAndAfter
           }
         }
       }
+    }
+  }
+
+  test("SPARK-30201 HiveOutputWriter standardOI should use ObjectInspectorCopyOption.DEFAULT") {
+    withTable("t1", "t2") {
+      withTempDir { dir =>
+        val file = new File(dir, "test.hex")
+        val hex = "AABBCC"
+        val bs = org.apache.commons.codec.binary.Hex.decodeHex(hex.toCharArray)
+        Files.write(bs, file)
+        val path = file.getParent
+        sql(s"create table t1 (c string) STORED AS TEXTFILE location '$path'")
+        checkAnswer(
+          sql("select hex(c) from t1"),
+          Row(hex)
+        )
+
+        sql("create table t2 as select c from t1")
+        checkAnswer(
+          sql("select hex(c) from t2"),
+          Row(hex)
+        )
+      }
+    }
+  }
+
+  test("SPARK-32508 " +
+    "Disallow empty part col values in partition spec before static partition writing") {
+    withTable("t1") {
+      spark.sql(
+        """
+          |CREATE TABLE t1 (c1 int)
+          |PARTITIONED BY (d string)
+          """.stripMargin)
+
+      val e = intercept[AnalysisException] {
+        spark.sql(
+          """
+            |INSERT OVERWRITE TABLE t1 PARTITION(d='')
+            |SELECT 1
+          """.stripMargin)
+      }.getMessage
+
+      assert(!e.contains("get partition: Value for key d is null or empty"))
+      assert(e.contains("Partition spec is invalid"))
     }
   }
 }

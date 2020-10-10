@@ -24,15 +24,15 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+import org.apache.commons.lang3.builder.ToStringBuilder;
+import org.apache.commons.lang3.builder.ToStringStyle;
 import org.apache.commons.lang3.tuple.Pair;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Objects;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
@@ -70,8 +70,6 @@ public class ExternalShuffleBlockResolver {
   private static final String APP_KEY_PREFIX = "AppExecShuffleInfo";
   private static final StoreVersion CURRENT_VERSION = new StoreVersion(1, 0);
 
-  private static final Pattern MULTIPLE_SEPARATORS = Pattern.compile(File.separator + "{2,}");
-
   // Map containing all registered executors' metadata.
   @VisibleForTesting
   final ConcurrentMap<AppExecId, ExecutorShuffleInfo> executors;
@@ -93,10 +91,6 @@ public class ExternalShuffleBlockResolver {
   final File registeredExecutorFile;
   @VisibleForTesting
   final DB db;
-
-  private final List<String> knownManagers = Arrays.asList(
-    "org.apache.spark.shuffle.sort.SortShuffleManager",
-    "org.apache.spark.shuffle.unsafe.UnsafeShuffleManager");
 
   public ExternalShuffleBlockResolver(TransportConf conf, File registeredExecutorFile)
       throws IOException {
@@ -150,10 +144,6 @@ public class ExternalShuffleBlockResolver {
       ExecutorShuffleInfo executorInfo) {
     AppExecId fullId = new AppExecId(appId, execId);
     logger.info("Registered executor {} with {}", fullId, executorInfo);
-    if (!knownManagers.contains(executorInfo.shuffleManager)) {
-      throw new UnsupportedOperationException(
-        "Unsupported shuffle manager of executor: " + executorInfo);
-    }
     try {
       if (db != null) {
         byte[] key = dbAppExecKey(fullId);
@@ -401,19 +391,19 @@ public class ExternalShuffleBlockResolver {
       if (o == null || getClass() != o.getClass()) return false;
 
       AppExecId appExecId = (AppExecId) o;
-      return Objects.equal(appId, appExecId.appId) && Objects.equal(execId, appExecId.execId);
+      return Objects.equals(appId, appExecId.appId) && Objects.equals(execId, appExecId.execId);
     }
 
     @Override
     public int hashCode() {
-      return Objects.hashCode(appId, execId);
+      return Objects.hash(appId, execId);
     }
 
     @Override
     public String toString() {
-      return Objects.toStringHelper(this)
-        .add("appId", appId)
-        .add("execId", execId)
+      return new ToStringBuilder(this, ToStringStyle.SHORT_PREFIX_STYLE)
+        .append("appId", appId)
+        .append("execId", execId)
         .toString();
     }
   }

@@ -118,9 +118,12 @@ private[hive] object HiveShim {
    *
    * @param functionClassName UDF class name
    * @param instance optional UDF instance which contains additional information (for macro)
+   * @param clazz optional class instance to create UDF instance
    */
-  private[hive] case class HiveFunctionWrapper(var functionClassName: String,
-    private var instance: AnyRef = null) extends java.io.Externalizable {
+  private[hive] case class HiveFunctionWrapper(
+      var functionClassName: String,
+      private var instance: AnyRef = null,
+      private var clazz: Class[_ <: AnyRef] = null) extends java.io.Externalizable {
 
     // for Serialization
     def this() = this(null)
@@ -158,46 +161,26 @@ private[hive] object HiveShim {
     }
 
     def deserializePlan[UDFType](is: java.io.InputStream, clazz: Class[_]): UDFType = {
-      if (HiveUtils.isHive23) {
-        val borrowKryo = serUtilClass.getMethod("borrowKryo")
-        val kryo = borrowKryo.invoke(serUtilClass)
-        val deserializeObjectByKryo = findMethod(serUtilClass, deserializeMethodName,
-          kryo.getClass.getSuperclass, classOf[InputStream], classOf[Class[_]])
-        try {
-          deserializeObjectByKryo.invoke(null, kryo, is, clazz).asInstanceOf[UDFType]
-        } finally {
-          serUtilClass.getMethod("releaseKryo", kryo.getClass.getSuperclass).invoke(null, kryo)
-        }
-      } else {
-        val runtimeSerializationKryo = utilClass.getField("runtimeSerializationKryo")
-        val threadLocalValue = runtimeSerializationKryo.get(utilClass)
-        val getMethod = threadLocalValue.getClass.getMethod("get")
-        val kryo = getMethod.invoke(threadLocalValue)
-        val deserializeObjectByKryo = findMethod(utilClass, deserializeMethodName,
-          kryo.getClass, classOf[InputStream], classOf[Class[_]])
+      val borrowKryo = serUtilClass.getMethod("borrowKryo")
+      val kryo = borrowKryo.invoke(serUtilClass)
+      val deserializeObjectByKryo = findMethod(serUtilClass, deserializeMethodName,
+        kryo.getClass.getSuperclass, classOf[InputStream], classOf[Class[_]])
+      try {
         deserializeObjectByKryo.invoke(null, kryo, is, clazz).asInstanceOf[UDFType]
+      } finally {
+        serUtilClass.getMethod("releaseKryo", kryo.getClass.getSuperclass).invoke(null, kryo)
       }
     }
 
     def serializePlan(function: AnyRef, out: java.io.OutputStream): Unit = {
-      if (HiveUtils.isHive23) {
-        val borrowKryo = serUtilClass.getMethod("borrowKryo")
-        val kryo = borrowKryo.invoke(serUtilClass)
-        val serializeObjectByKryo = findMethod(serUtilClass, serializeMethodName,
-          kryo.getClass.getSuperclass, classOf[Object], classOf[OutputStream])
-        try {
-          serializeObjectByKryo.invoke(null, kryo, function, out)
-        } finally {
-          serUtilClass.getMethod("releaseKryo", kryo.getClass.getSuperclass).invoke(null, kryo)
-        }
-      } else {
-        val runtimeSerializationKryo = utilClass.getField("runtimeSerializationKryo")
-        val threadLocalValue = runtimeSerializationKryo.get(utilClass)
-        val getMethod = threadLocalValue.getClass.getMethod("get")
-        val kryo = getMethod.invoke(threadLocalValue)
-        val serializeObjectByKryo = findMethod(utilClass, serializeMethodName,
-          kryo.getClass, classOf[Object], classOf[OutputStream])
+      val borrowKryo = serUtilClass.getMethod("borrowKryo")
+      val kryo = borrowKryo.invoke(serUtilClass)
+      val serializeObjectByKryo = findMethod(serUtilClass, serializeMethodName,
+        kryo.getClass.getSuperclass, classOf[Object], classOf[OutputStream])
+      try {
         serializeObjectByKryo.invoke(null, kryo, function, out)
+      } finally {
+        serUtilClass.getMethod("releaseKryo", kryo.getClass.getSuperclass).invoke(null, kryo)
       }
     }
 
@@ -232,8 +215,10 @@ private[hive] object HiveShim {
         in.readFully(functionInBytes)
 
         // deserialize the function object via Hive Utilities
+        clazz = Utils.getContextOrSparkClassLoader.loadClass(functionClassName)
+          .asInstanceOf[Class[_ <: AnyRef]]
         instance = deserializePlan[AnyRef](new java.io.ByteArrayInputStream(functionInBytes),
-          Utils.getContextOrSparkClassLoader.loadClass(functionClassName))
+          clazz)
       }
     }
 
@@ -241,8 +226,11 @@ private[hive] object HiveShim {
       if (instance != null) {
         instance.asInstanceOf[UDFType]
       } else {
-        val func = Utils.getContextOrSparkClassLoader
-          .loadClass(functionClassName).getConstructor().newInstance().asInstanceOf[UDFType]
+        if (clazz == null) {
+          clazz = Utils.getContextOrSparkClassLoader.loadClass(functionClassName)
+            .asInstanceOf[Class[_ <: AnyRef]]
+        }
+        val func = clazz.getConstructor().newInstance().asInstanceOf[UDFType]
         if (!func.isInstanceOf[UDF]) {
           // We cache the function if it's no the Simple UDF,
           // as we always have to create new instance for Simple UDF

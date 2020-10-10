@@ -42,7 +42,7 @@ create table datetimes (
     f_timestamp timestamp
 ) using parquet;
 
--- Spark cannot safely cast StringType to TimestampType
+-- Spark cannot safely cast string to timestamp
 -- [SPARK-29636] Spark can't parse '11:00 BST' or '2000-10-19 10:23:54+01' signatures to timestamp
 insert into datetimes values
 (1, timestamp '11:00', cast ('11:00 BST' as timestamp), cast ('1 year' as timestamp), cast ('2000-10-19 10:23:54+01' as timestamp), timestamp '2000-10-19 10:23:54'),
@@ -399,12 +399,11 @@ SELECT range(1, 100) OVER () FROM empsalary;
 
 SELECT ntile(0) OVER (ORDER BY ten), ten, four FROM tenk1;
 
--- [SPARK-27951] ANSI SQL: NTH_VALUE function
--- SELECT nth_value(four, 0) OVER (ORDER BY ten), ten, four FROM tenk1;
+SELECT nth_value(four, 0) OVER (ORDER BY ten), ten, four FROM tenk1;
 
 -- filter
 
--- [SPARK-28500] Adds support for `filter` clause
+-- [SPARK-30182] Support nested aggregates
 -- SELECT sum(salary), row_number() OVER (ORDER BY depname), sum(
 --     sum(salary) FILTER (WHERE enroll_date > '2007-01-01')
 -- )

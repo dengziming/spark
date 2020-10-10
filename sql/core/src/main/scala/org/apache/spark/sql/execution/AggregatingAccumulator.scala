@@ -230,14 +230,14 @@ object AggregatingAccumulator {
     val typedImperatives = mutable.Buffer.empty[TypedImperativeAggregate[_]]
     val inputAttributeSeq: AttributeSeq = inputAttributes
     val resultExpressions = functions.map(_.transform {
-      case AggregateExpression(agg: DeclarativeAggregate, _, _, _) =>
+      case AggregateExpression(agg: DeclarativeAggregate, _, _, _, _) =>
         aggBufferAttributes ++= agg.aggBufferAttributes
         inputAggBufferAttributes ++= agg.inputAggBufferAttributes
         initialValues ++= agg.initialValues
         updateExpressions ++= agg.updateExpressions
         mergeExpressions ++= agg.mergeExpressions
         agg.evaluateExpression
-      case AggregateExpression(agg: ImperativeAggregate, _, _, _) =>
+      case AggregateExpression(agg: ImperativeAggregate, _, _, _, _) =>
         val imperative = BindReferences.bindReference(agg
           .withNewMutableAggBufferOffset(aggBufferAttributes.size)
           .withNewInputAggBufferOffset(inputAggBufferAttributes.size),
@@ -257,16 +257,16 @@ object AggregatingAccumulator {
         imperative
     })
 
-    val updateAttrSeq: AttributeSeq = aggBufferAttributes ++ inputAttributes
-    val mergeAttrSeq: AttributeSeq = aggBufferAttributes ++ inputAggBufferAttributes
-    val aggBufferAttributesSeq: AttributeSeq = aggBufferAttributes
+    val updateAttrSeq: AttributeSeq = (aggBufferAttributes ++ inputAttributes).toSeq
+    val mergeAttrSeq: AttributeSeq = (aggBufferAttributes ++ inputAggBufferAttributes).toSeq
+    val aggBufferAttributesSeq: AttributeSeq = aggBufferAttributes.toSeq
 
     // Create the accumulator.
     new AggregatingAccumulator(
-      aggBufferAttributes.map(_.dataType),
-      initialValues,
-      updateExpressions.map(BindReferences.bindReference(_, updateAttrSeq)),
-      mergeExpressions.map(BindReferences.bindReference(_, mergeAttrSeq)),
+      aggBufferAttributes.map(_.dataType).toSeq,
+      initialValues.toSeq,
+      updateExpressions.map(BindReferences.bindReference(_, updateAttrSeq)).toSeq,
+      mergeExpressions.map(BindReferences.bindReference(_, mergeAttrSeq)).toSeq,
       resultExpressions.map(BindReferences.bindReference(_, aggBufferAttributesSeq)),
       imperatives.toArray,
       typedImperatives.toArray,

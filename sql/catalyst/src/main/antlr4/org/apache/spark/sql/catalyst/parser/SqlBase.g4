@@ -16,7 +16,7 @@
 
 grammar SqlBase;
 
-@members {
+@parser::members {
   /**
    * When false, INTERSECT is given the greater precedence over the other set
    * operations (UNION, EXCEPT and MINUS) as per the SQL standard.
@@ -30,11 +30,12 @@ grammar SqlBase;
   public boolean legacy_exponent_literal_as_decimal_enabled = false;
 
   /**
-   * When false, CREATE TABLE syntax without a provider will use
-   * the value of spark.sql.sources.default as its provider.
+   * When true, the behavior of keywords follows ANSI SQL standard.
    */
-  public boolean legacy_create_hive_table_by_default_enabled = false;
+  public boolean SQL_standard_keyword_behavior = false;
+}
 
+@lexer::members {
   /**
    * Verify whether current token is a valid decimal token (which contains dot).
    * Returns true if the character that follows the token is not a digit or letter or underscore.
@@ -58,13 +59,24 @@ grammar SqlBase;
   }
 
   /**
-   * When true, the behavior of keywords follows ANSI SQL standard.
+   * This method will be called when we see '/*' and try to match it as a bracketed comment.
+   * If the next character is '+', it should be parsed as hint later, and we cannot match
+   * it as a bracketed comment.
+   *
+   * Returns true if the next character is '+'.
    */
-  public boolean SQL_standard_keyword_behavior = false;
+  public boolean isHint() {
+    int nextChar = _input.LA(1);
+    if (nextChar == '+') {
+      return true;
+    } else {
+      return false;
+    }
+  }
 }
 
 singleStatement
-    : statement EOF
+    : statement ';'* EOF
     ;
 
 singleExpression
@@ -95,28 +107,23 @@ statement
     : query                                                            #statementDefault
     | ctes? dmlStatementNoWith                                         #dmlStatement
     | USE NAMESPACE? multipartIdentifier                               #use
-    | CREATE (database | NAMESPACE) (IF NOT EXISTS)? multipartIdentifier
-        ((COMMENT comment=STRING) |
+    | CREATE namespace (IF NOT EXISTS)? multipartIdentifier
+        (commentSpec |
          locationSpec |
          (WITH (DBPROPERTIES | PROPERTIES) tablePropertyList))*        #createNamespace
-    | ALTER (database | NAMESPACE) multipartIdentifier
+    | ALTER namespace multipartIdentifier
         SET (DBPROPERTIES | PROPERTIES) tablePropertyList              #setNamespaceProperties
-    | ALTER (database | NAMESPACE) multipartIdentifier
+    | ALTER namespace multipartIdentifier
         SET locationSpec                                               #setNamespaceLocation
-    | DROP (database | NAMESPACE) (IF EXISTS)? multipartIdentifier
+    | DROP namespace (IF EXISTS)? multipartIdentifier
         (RESTRICT | CASCADE)?                                          #dropNamespace
     | SHOW (DATABASES | NAMESPACES) ((FROM | IN) multipartIdentifier)?
         (LIKE? pattern=STRING)?                                        #showNamespaces
-    | {!legacy_create_hive_table_by_default_enabled}?
-        createTableHeader ('(' colTypeList ')')? tableProvider?
-        createTableClauses
-        (AS? query)?                                                   #createTable
-    | {legacy_create_hive_table_by_default_enabled}?
-        createTableHeader ('(' colTypeList ')')? tableProvider
+    | createTableHeader ('(' colTypeList ')')? tableProvider
         createTableClauses
         (AS? query)?                                                   #createTable
     | createTableHeader ('(' columns=colTypeList ')')?
-        ((COMMENT comment=STRING) |
+        (commentSpec |
         (PARTITIONED BY '(' partitionColumns=colTypeList ')' |
         PARTITIONED BY partitionColumnNames=identifierList) |
         bucketSpec |
@@ -160,7 +167,13 @@ statement
         UNSET TBLPROPERTIES (IF EXISTS)? tablePropertyList             #unsetTableProperties
     | ALTER TABLE table=multipartIdentifier
         (ALTER | CHANGE) COLUMN? column=multipartIdentifier
-        (TYPE dataType)? (COMMENT comment=STRING)? colPosition?        #alterTableColumn
+        alterColumnAction?                                             #alterTableAlterColumn
+    | ALTER TABLE table=multipartIdentifier partitionSpec?
+        CHANGE COLUMN?
+        colName=multipartIdentifier colType colPosition?               #hiveChangeColumn
+    | ALTER TABLE table=multipartIdentifier partitionSpec?
+        REPLACE COLUMNS
+        '(' columns=qualifiedColTypeWithPositionList ')'               #hiveReplaceColumns
     | ALTER TABLE multipartIdentifier (partitionSpec)?
         SET SERDE STRING (WITH SERDEPROPERTIES tablePropertyList)?     #setTableSerDe
     | ALTER TABLE multipartIdentifier (partitionSpec)?
@@ -179,7 +192,7 @@ statement
     | CREATE (OR REPLACE)? (GLOBAL? TEMPORARY)?
         VIEW (IF NOT EXISTS)? multipartIdentifier
         identifierCommentList?
-        ((COMMENT STRING) |
+        (commentSpec |
          (PARTITIONED ON identifierList) |
          (TBLPROPERTIES tablePropertyList))*
         AS query                                                       #createView
@@ -195,24 +208,30 @@ statement
         statement                                                      #explain
     | SHOW TABLES ((FROM | IN) multipartIdentifier)?
         (LIKE? pattern=STRING)?                                        #showTables
-    | SHOW TABLE EXTENDED ((FROM | IN) namespace=multipartIdentifier)?
+    | SHOW TABLE EXTENDED ((FROM | IN) ns=multipartIdentifier)?
         LIKE pattern=STRING partitionSpec?                             #showTable
     | SHOW TBLPROPERTIES table=multipartIdentifier
         ('(' key=tablePropertyKey ')')?                                #showTblProperties
     | SHOW COLUMNS (FROM | IN) table=multipartIdentifier
-        ((FROM | IN) namespace=multipartIdentifier)?                   #showColumns
+        ((FROM | IN) ns=multipartIdentifier)?                          #showColumns
+    | SHOW VIEWS ((FROM | IN) multipartIdentifier)?
+        (LIKE? pattern=STRING)?                                        #showViews
     | SHOW PARTITIONS multipartIdentifier partitionSpec?               #showPartitions
     | SHOW identifier? FUNCTIONS
         (LIKE? (multipartIdentifier | pattern=STRING))?                #showFunctions
-    | SHOW CREATE TABLE multipartIdentifier                            #showCreateTable
+    | SHOW CREATE TABLE multipartIdentifier (AS SERDE)?                #showCreateTable
     | SHOW CURRENT NAMESPACE                                           #showCurrentNamespace
     | (DESC | DESCRIBE) FUNCTION EXTENDED? describeFuncName            #describeFunction
-    | (DESC | DESCRIBE) (database | NAMESPACE) EXTENDED?
+    | (DESC | DESCRIBE) namespace EXTENDED?
         multipartIdentifier                                            #describeNamespace
     | (DESC | DESCRIBE) TABLE? option=(EXTENDED | FORMATTED)?
-        multipartIdentifier partitionSpec? describeColName?            #describeTable
+        multipartIdentifier partitionSpec? describeColName?            #describeRelation
     | (DESC | DESCRIBE) QUERY? query                                   #describeQuery
+    | COMMENT ON namespace multipartIdentifier IS
+        comment=(STRING | NULL)                                        #commentNamespace
+    | COMMENT ON TABLE multipartIdentifier IS comment=(STRING | NULL)  #commentTable
     | REFRESH TABLE multipartIdentifier                                #refreshTable
+    | REFRESH FUNCTION multipartIdentifier                             #refreshFunction
     | REFRESH (STRING | .*?)                                           #refreshResource
     | CACHE LAZY? TABLE multipartIdentifier
         (OPTIONS options=tablePropertyList)? (AS? query)?              #cacheTable
@@ -224,9 +243,18 @@ statement
     | MSCK REPAIR TABLE multipartIdentifier                            #repairTable
     | op=(ADD | LIST) identifier (STRING | .*?)                        #manageResource
     | SET ROLE .*?                                                     #failNativeCommand
+    | SET TIME ZONE interval                                           #setTimeZone
+    | SET TIME ZONE timezone=(STRING | LOCAL)                          #setTimeZone
+    | SET TIME ZONE .*?                                                #setTimeZone
+    | SET configKey (EQ .*?)?                                          #setQuotedConfiguration
     | SET .*?                                                          #setConfiguration
-    | RESET                                                            #resetConfiguration
+    | RESET configKey                                                  #resetQuotedConfiguration
+    | RESET .*?                                                        #resetConfiguration
     | unsupportedHiveNativeCommands .*?                                #failNativeCommand
+    ;
+
+configKey
+    : quotedIdentifier
     ;
 
 unsupportedHiveNativeCommands
@@ -300,6 +328,10 @@ locationSpec
     : LOCATION STRING
     ;
 
+commentSpec
+    : COMMENT STRING
+    ;
+
 query
     : ctes? queryTerm queryOrganization
     ;
@@ -323,8 +355,9 @@ partitionVal
     : identifier (EQ constant)?
     ;
 
-database
-    : DATABASE
+namespace
+    : NAMESPACE
+    | DATABASE
     | SCHEMA
     ;
 
@@ -357,7 +390,7 @@ createTableClauses
      (PARTITIONED BY partitioning=transformList) |
      bucketSpec |
      locationSpec |
-     (COMMENT comment=STRING) |
+     commentSpec |
      (TBLPROPERTIES tableProps=tablePropertyList))*
     ;
 
@@ -645,7 +678,7 @@ identifierCommentList
     ;
 
 identifierComment
-    : identifier (COMMENT STRING)?
+    : identifier commentSpec?
     ;
 
 relationPrimary
@@ -734,6 +767,7 @@ predicate
     | NOT? kind=IN '(' expression (',' expression)* ')'
     | NOT? kind=IN '(' query ')'
     | NOT? kind=RLIKE pattern=valueExpression
+    | NOT? kind=LIKE quantifier=(ANY | SOME | ALL) ('('')' | '(' expression (',' expression)* ')')
     | NOT? kind=LIKE pattern=valueExpression (ESCAPE escapeChar=STRING)?
     | IS NOT? kind=NULL
     | IS NOT? kind=(TRUE | FALSE | UNKNOWN)
@@ -757,8 +791,8 @@ primaryExpression
     | CASE value=expression whenClause+ (ELSE elseExpression=expression)? END                  #simpleCase
     | CAST '(' expression AS dataType ')'                                                      #cast
     | STRUCT '(' (argument+=namedExpression (',' argument+=namedExpression)*)? ')'             #struct
-    | (FIRST | FIRST_VALUE) '(' expression ((IGNORE | RESPECT) NULLS)? ')'                     #first
-    | (LAST | LAST_VALUE) '(' expression ((IGNORE | RESPECT) NULLS)? ')'                       #last
+    | FIRST '(' expression (IGNORE NULLS)? ')'                                                 #first
+    | LAST '(' expression (IGNORE NULLS)? ')'                                                  #last
     | POSITION '(' substr=valueExpression IN str=valueExpression ')'                           #position
     | constant                                                                                 #constantDefault
     | ASTERISK                                                                                 #star
@@ -766,7 +800,7 @@ primaryExpression
     | '(' namedExpression (',' namedExpression)+ ')'                                           #rowConstructor
     | '(' query ')'                                                                            #subqueryExpression
     | functionName '(' (setQuantifier? argument+=expression (',' argument+=expression)*)? ')'
-       (OVER windowSpec)?                                                                      #functionCall
+       (FILTER '(' WHERE where=booleanExpression ')')? (OVER windowSpec)?                      #functionCall
     | identifier '->' expression                                                               #lambda
     | '(' identifier (',' identifier)+ ')' '->' expression                                     #lambda
     | value=primaryExpression '[' index=valueExpression ']'                                    #subscript
@@ -809,7 +843,6 @@ booleanValue
 
 interval
     : INTERVAL (errorCapturingMultiUnitsInterval | errorCapturingUnitToUnitInterval)?
-    | {SQL_standard_keyword_behavior}? (errorCapturingMultiUnitsInterval | errorCapturingUnitToUnitInterval)
     ;
 
 errorCapturingMultiUnitsInterval
@@ -817,7 +850,7 @@ errorCapturingMultiUnitsInterval
     ;
 
 multiUnitsInterval
-    : (intervalValue intervalUnit)+
+    : (intervalValue unit+=identifier)+
     ;
 
 errorCapturingUnitToUnitInterval
@@ -825,7 +858,7 @@ errorCapturingUnitToUnitInterval
     ;
 
 unitToUnitInterval
-    : value=intervalValue from=intervalUnit TO to=intervalUnit
+    : value=intervalValue from=identifier TO to=identifier
     ;
 
 intervalValue
@@ -833,29 +866,8 @@ intervalValue
     | STRING
     ;
 
-intervalUnit
-    : DAY
-    | DAYS
-    | HOUR
-    | HOURS
-    | MICROSECOND
-    | MICROSECONDS
-    | MILLISECOND
-    | MILLISECONDS
-    | MINUTE
-    | MINUTES
-    | MONTH
-    | MONTHS
-    | SECOND
-    | SECONDS
-    | WEEK
-    | WEEKS
-    | YEAR
-    | YEARS
-    ;
-
 colPosition
-    : FIRST | AFTER multipartIdentifier
+    : position=FIRST | position=AFTER afterCol=errorCapturingIdentifier
     ;
 
 dataType
@@ -870,7 +882,7 @@ qualifiedColTypeWithPositionList
     ;
 
 qualifiedColTypeWithPosition
-    : name=multipartIdentifier dataType (COMMENT comment=STRING)? colPosition?
+    : name=multipartIdentifier dataType (NOT NULL)? commentSpec? colPosition?
     ;
 
 colTypeList
@@ -878,7 +890,7 @@ colTypeList
     ;
 
 colType
-    : colName=errorCapturingIdentifier dataType (COMMENT STRING)?
+    : colName=errorCapturingIdentifier dataType (NOT NULL)? commentSpec?
     ;
 
 complexColTypeList
@@ -886,7 +898,7 @@ complexColTypeList
     ;
 
 complexColType
-    : identifier ':' dataType (COMMENT STRING)?
+    : identifier ':' dataType (NOT NULL)? commentSpec?
     ;
 
 whenClause
@@ -931,6 +943,7 @@ qualifiedNameList
 
 functionName
     : qualifiedName
+    | FILTER
     | LEFT
     | RIGHT
     ;
@@ -977,7 +990,15 @@ number
     | MINUS? SMALLINT_LITERAL         #smallIntLiteral
     | MINUS? TINYINT_LITERAL          #tinyIntLiteral
     | MINUS? DOUBLE_LITERAL           #doubleLiteral
+    | MINUS? FLOAT_LITERAL            #floatLiteral
     | MINUS? BIGDECIMAL_LITERAL       #bigDecimalLiteral
+    ;
+
+alterColumnAction
+    : TYPE dataType
+    | commentSpec
+    | colPosition
+    | setOrDrop=(SET | DROP) NOT NULL
     ;
 
 // When `SQL_standard_keyword_behavior=true`, there are 2 kinds of keywords in Spark SQL.
@@ -986,15 +1007,17 @@ number
 //     function, alias, etc.
 // - Non-reserved keywords:
 //     Keywords that have a special meaning only in particular contexts and can be used as
-//     identifiers in other contexts. For example, `SELECT 1 WEEK` is an interval literal, but WEEK
+//     identifiers in other contexts. For example, `EXPLAIN SELECT ...` is a command, but EXPLAIN
 //     can be used as identifiers in other places.
 // You can find the full keywords list by searching "Start of the keywords list" in this file.
 // The non-reserved keywords are listed below. Keywords not in this list are reserved keywords.
 ansiNonReserved
+//--ANSI-NON-RESERVED-START
     : ADD
     | AFTER
     | ALTER
     | ANALYZE
+    | ANTI
     | ARCHIVE
     | ARRAY
     | ASC
@@ -1024,7 +1047,6 @@ ansiNonReserved
     | DATA
     | DATABASE
     | DATABASES
-    | DAYS
     | DBPROPERTIES
     | DEFINED
     | DELETE
@@ -1055,7 +1077,6 @@ ansiNonReserved
     | FUNCTIONS
     | GLOBAL
     | GROUPING
-    | HOURS
     | IF
     | IGNORE
     | IMPORT
@@ -1084,12 +1105,6 @@ ansiNonReserved
     | MAP
     | MATCHED
     | MERGE
-    | MICROSECOND
-    | MICROSECONDS
-    | MILLISECOND
-    | MILLISECONDS
-    | MINUTES
-    | MONTHS
     | MSCK
     | NAMESPACE
     | NAMESPACES
@@ -1125,7 +1140,6 @@ ansiNonReserved
     | REPAIR
     | REPLACE
     | RESET
-    | RESPECT
     | RESTRICT
     | REVOKE
     | RLIKE
@@ -1136,11 +1150,12 @@ ansiNonReserved
     | ROW
     | ROWS
     | SCHEMA
-    | SECONDS
+    | SEMI
     | SEPARATED
     | SERDE
     | SERDEPROPERTIES
     | SET
+    | SETMINUS
     | SETS
     | SHOW
     | SKEWED
@@ -1165,6 +1180,7 @@ ansiNonReserved
     | TRIM
     | TRUE
     | TRUNCATE
+    | TYPE
     | UNARCHIVE
     | UNBOUNDED
     | UNCACHE
@@ -1174,10 +1190,10 @@ ansiNonReserved
     | USE
     | VALUES
     | VIEW
-    | WEEK
-    | WEEKS
+    | VIEWS
     | WINDOW
-    | YEARS
+    | ZONE
+//--ANSI-NON-RESERVED-END
     ;
 
 // When `SQL_standard_keyword_behavior=false`, there are 2 kinds of keywords in Spark SQL.
@@ -1208,6 +1224,7 @@ strictNonReserved
     ;
 
 nonReserved
+//--DEFAULT-NON-RESERVED-START
     : ADD
     | AFTER
     | ALL
@@ -1258,8 +1275,6 @@ nonReserved
     | DATA
     | DATABASE
     | DATABASES
-    | DAY
-    | DAYS
     | DBPROPERTIES
     | DEFINED
     | DELETE
@@ -1286,10 +1301,10 @@ nonReserved
     | EXTRACT
     | FALSE
     | FETCH
+    | FILTER
     | FIELDS
     | FILEFORMAT
     | FIRST
-    | FIRST_VALUE
     | FOLLOWING
     | FOR
     | FOREIGN
@@ -1303,8 +1318,6 @@ nonReserved
     | GROUP
     | GROUPING
     | HAVING
-    | HOUR
-    | HOURS
     | IF
     | IGNORE
     | IMPORT
@@ -1320,7 +1333,6 @@ nonReserved
     | ITEMS
     | KEYS
     | LAST
-    | LAST_VALUE
     | LATERAL
     | LAZY
     | LEADING
@@ -1338,14 +1350,6 @@ nonReserved
     | MAP
     | MATCHED
     | MERGE
-    | MICROSECOND
-    | MICROSECONDS
-    | MILLISECOND
-    | MILLISECONDS
-    | MINUTE
-    | MINUTES
-    | MONTH
-    | MONTHS
     | MSCK
     | NAMESPACE
     | NAMESPACES
@@ -1390,7 +1394,6 @@ nonReserved
     | REPAIR
     | REPLACE
     | RESET
-    | RESPECT
     | RESTRICT
     | REVOKE
     | RLIKE
@@ -1401,8 +1404,6 @@ nonReserved
     | ROW
     | ROWS
     | SCHEMA
-    | SECOND
-    | SECONDS
     | SELECT
     | SEPARATED
     | SERDE
@@ -1429,6 +1430,7 @@ nonReserved
     | TEMPORARY
     | TERMINATED
     | THEN
+    | TIME
     | TO
     | TOUCH
     | TRAILING
@@ -1451,23 +1453,22 @@ nonReserved
     | USER
     | VALUES
     | VIEW
-    | WEEK
-    | WEEKS
+    | VIEWS
     | WHEN
     | WHERE
     | WINDOW
     | WITH
-    | YEAR
-    | YEARS
+    | ZONE
+//--DEFAULT-NON-RESERVED-END
     ;
 
 // NOTE: If you add a new token in the list below, you should update the list of keywords
-// in `docs/sql-keywords.md`. If the token is a non-reserved keyword,
-// please update `ansiNonReserved` and `nonReserved` as well.
+// and reserved tag in `docs/sql-ref-ansi-compliance.md#sql-keywords`.
 
 //============================
 // Start of the keywords list
 //============================
+//--SPARK-KEYWORD-LIST-START
 ADD: 'ADD';
 AFTER: 'AFTER';
 ALL: 'ALL';
@@ -1520,8 +1521,6 @@ CURRENT_USER: 'CURRENT_USER';
 DATA: 'DATA';
 DATABASE: 'DATABASE';
 DATABASES: 'DATABASES' | 'SCHEMAS';
-DAY: 'DAY';
-DAYS: 'DAYS';
 DBPROPERTIES: 'DBPROPERTIES';
 DEFINED: 'DEFINED';
 DELETE: 'DELETE';
@@ -1533,6 +1532,7 @@ DIRECTORIES: 'DIRECTORIES';
 DIRECTORY: 'DIRECTORY';
 DISTINCT: 'DISTINCT';
 DISTRIBUTE: 'DISTRIBUTE';
+DIV: 'DIV';
 DROP: 'DROP';
 ELSE: 'ELSE';
 END: 'END';
@@ -1549,9 +1549,9 @@ EXTRACT: 'EXTRACT';
 FALSE: 'FALSE';
 FETCH: 'FETCH';
 FIELDS: 'FIELDS';
+FILTER: 'FILTER';
 FILEFORMAT: 'FILEFORMAT';
 FIRST: 'FIRST';
-FIRST_VALUE: 'FIRST_VALUE';
 FOLLOWING: 'FOLLOWING';
 FOR: 'FOR';
 FOREIGN: 'FOREIGN';
@@ -1566,8 +1566,6 @@ GRANT: 'GRANT';
 GROUP: 'GROUP';
 GROUPING: 'GROUPING';
 HAVING: 'HAVING';
-HOUR: 'HOUR';
-HOURS: 'HOURS';
 IF: 'IF';
 IGNORE: 'IGNORE';
 IMPORT: 'IMPORT';
@@ -1586,7 +1584,6 @@ ITEMS: 'ITEMS';
 JOIN: 'JOIN';
 KEYS: 'KEYS';
 LAST: 'LAST';
-LAST_VALUE: 'LAST_VALUE';
 LATERAL: 'LATERAL';
 LAZY: 'LAZY';
 LEADING: 'LEADING';
@@ -1605,14 +1602,6 @@ MACRO: 'MACRO';
 MAP: 'MAP';
 MATCHED: 'MATCHED';
 MERGE: 'MERGE';
-MICROSECOND: 'MICROSECOND';
-MICROSECONDS: 'MICROSECONDS';
-MILLISECOND: 'MILLISECOND';
-MILLISECONDS: 'MILLISECONDS';
-MINUTE: 'MINUTE';
-MINUTES: 'MINUTES';
-MONTH: 'MONTH';
-MONTHS: 'MONTHS';
 MSCK: 'MSCK';
 NAMESPACE: 'NAMESPACE';
 NAMESPACES: 'NAMESPACES';
@@ -1659,7 +1648,6 @@ RENAME: 'RENAME';
 REPAIR: 'REPAIR';
 REPLACE: 'REPLACE';
 RESET: 'RESET';
-RESPECT: 'RESPECT';
 RESTRICT: 'RESTRICT';
 REVOKE: 'REVOKE';
 RIGHT: 'RIGHT';
@@ -1671,8 +1659,6 @@ ROLLUP: 'ROLLUP';
 ROW: 'ROW';
 ROWS: 'ROWS';
 SCHEMA: 'SCHEMA';
-SECOND: 'SECOND';
-SECONDS: 'SECONDS';
 SELECT: 'SELECT';
 SEMI: 'SEMI';
 SEPARATED: 'SEPARATED';
@@ -1701,6 +1687,7 @@ TBLPROPERTIES: 'TBLPROPERTIES';
 TEMPORARY: 'TEMPORARY' | 'TEMP';
 TERMINATED: 'TERMINATED';
 THEN: 'THEN';
+TIME: 'TIME';
 TO: 'TO';
 TOUCH: 'TOUCH';
 TRAILING: 'TRAILING';
@@ -1725,14 +1712,13 @@ USER: 'USER';
 USING: 'USING';
 VALUES: 'VALUES';
 VIEW: 'VIEW';
-WEEK: 'WEEK';
-WEEKS: 'WEEKS';
+VIEWS: 'VIEWS';
 WHEN: 'WHEN';
 WHERE: 'WHERE';
 WINDOW: 'WINDOW';
 WITH: 'WITH';
-YEAR: 'YEAR';
-YEARS: 'YEARS';
+ZONE: 'ZONE';
+//--SPARK-KEYWORD-LIST-END
 //============================
 // End of the keywords list
 //============================
@@ -1751,7 +1737,6 @@ MINUS: '-';
 ASTERISK: '*';
 SLASH: '/';
 PERCENT: '%';
-DIV: 'DIV';
 TILDE: '~';
 AMPERSAND: '&';
 PIPE: '|';
@@ -1786,6 +1771,11 @@ EXPONENT_VALUE
 
 DECIMAL_VALUE
     : DECIMAL_DIGITS {isValidDecimal()}?
+    ;
+
+FLOAT_LITERAL
+    : DIGIT+ EXPONENT? 'F'
+    | DECIMAL_DIGITS EXPONENT? 'F' {isValidDecimal()}?
     ;
 
 DOUBLE_LITERAL
@@ -1824,15 +1814,11 @@ fragment LETTER
     ;
 
 SIMPLE_COMMENT
-    : '--' ~[\r\n]* '\r'? '\n'? -> channel(HIDDEN)
-    ;
-
-BRACKETED_EMPTY_COMMENT
-    : '/**/' -> channel(HIDDEN)
+    : '--' ('\\\n' | ~[\r\n])* '\r'? '\n'? -> channel(HIDDEN)
     ;
 
 BRACKETED_COMMENT
-    : '/*' ~[+] .*? '*/' -> channel(HIDDEN)
+    : '/*' {!isHint()}? (BRACKETED_COMMENT|.)*? '*/' -> channel(HIDDEN)
     ;
 
 WS
