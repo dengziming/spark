@@ -43,7 +43,7 @@ A string literal is used to specify a character string value.
 
 * **char**
 
-    One character from the character set. Use `\` to escape special characters (e.g., `'` or `\`).
+    One character from the character set. Use `\` to escape special characters (e.g., `'` or `\`), additionally, consecutive quotes can be used for escaping (e.g., `'S''park'` equals `'S\'park'`, `"S""park"` equals `"S\"park"`).
     To represent unicode characters, use 16-bit or 32-bit unicode escape of the form `\uxxxx` or `\Uxxxxxxxx`,
     where xxxx and xxxxxxxx are 16-bit and 32-bit code points in hexadecimal respectively (e.g., `\u3042` for `あ` and `\U0001F44D` for `👍`).
     An ASCII character can also be represented as an octal number preceded by `\` like `\101`, which represents `A`.
@@ -62,8 +62,12 @@ The following escape sequences are recognized in regular string literals (withou
 - `\%` -> `\%`;
 - `\_` -> `\_`;
 - `\<other char>` -> `<other char>`, skip the slash and leave the character as is.
+- `""` -> `"`, skip first `"` in double-quoted string.
+- `''` -> `'`, skip first `'` in single-quoted string.
 
 The unescaping rules above can be turned off by setting the SQL config `spark.sql.parser.escapedStringLiterals` to `true`.
+
+When consecutive quotes conflict with string concatenation, escaping takes precedence (e.g., `'a''b'` → `a'b` not `a`+`b`). To force string concatenation behavior instead, set `spark.sql.legacy.consecutiveStringLiterals.enabled` to `true`.
 
 Chains of string literals are coalesced into a single string literal.
 This can be useful when constructing strings that are too long to fit on a single line.
@@ -99,6 +103,13 @@ SELECT r"'\n' represents newline character." AS col;
 +----------------------------------+
 |'\n' represents newline character.|
 +----------------------------------+
+
+SELECT "S""park" AS col1, 'S''park' AS col2;
++--------+--------+
+|    col1|    col2|
++--------+--------+
+| S"park | S'park |
++--------+--------+
 
 SELECT 'Hello' ',' 'World!' AS col;
 +-------------+
